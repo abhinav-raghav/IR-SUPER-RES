@@ -1,75 +1,62 @@
-# Thermal Image Super Resolution
+# Infrared Image Super Resolution Model
 
-A web application for enhancing the resolution of thermal images using deep learning. Built with PyTorch, Flask, and React.
+A deep learning model for enhancing the resolution and quality of infrared/thermal images. The project uses PyTorch for the model implementation and Flask for the web interface.
 
 ## Features
 
-- Upload thermal images for super-resolution processing
-- Real-time image enhancement using deep learning
-- Modern, responsive UI with Material-UI components
-- Download enhanced images
+- Web-based interface for easy image upload and processing
+- Real-time image enhancement
+- Download capability for both original and enhanced images
+- Modern UI with responsive design
+- Support for various image formats
 
 ## Tech Stack
 
-### Backend
-- Python 3.8+
-- Flask
+- Python 3.x
 - PyTorch
+- Flask
 - OpenCV
-- NumPy
+- Material Design
 
-### Frontend
-- React
-- Material-UI
-- Axios
-
-## Setup
+## Setup Instructions
 
 1. Clone the repository:
 ```bash
 git clone <your-repo-url>
-cd thermal-super-resolution
+cd Super-Res
 ```
 
-2. Install Python dependencies:
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Install frontend dependencies:
+3. Run the application:
 ```bash
-cd frontend
-npm install
-```
-
-4. Start the backend server:
-```bash
-# From the root directory
 python app.py
 ```
 
-5. Start the frontend development server:
-```bash
-# From the frontend directory
-npm start
+4. Open your browser and navigate to:
 ```
-
-The application will be available at:
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:5000
+http://localhost:5000
+```
 
 ## Project Structure
 
-```
-.
-├── app.py              # Flask backend server
-├── model.py           # PyTorch model definition
-├── train_thermal.py   # Training script
-├── process_sample_data.py  # Data preprocessing
-├── requirements.txt   # Python dependencies
-├── uploads/          # Directory for uploaded images
-└── frontend/         # React frontend application
-```
+- `app.py`: Flask web application
+- `model.py`: Neural network model architecture
+- `train.py`: Training script for the model
+- `prepare_data.py`: Data preparation utilities
+- `models/`: Directory for saved model weights
+- `data/`: Training and validation data
+- `uploads/`: Temporary storage for processed images
+
+## Model Architecture
+
+The model uses a custom CNN architecture optimized for thermal image enhancement:
+- Residual learning for better feature preservation
+- Skip connections to maintain thermal information
+- Optimized for real-time processing
 
 ## Authors
 

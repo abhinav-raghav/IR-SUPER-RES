@@ -1,15 +1,65 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import ViTModel
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import cv2
 import os
 from tqdm import tqdm
-import wandb
+
+class ResBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        residual = x
+        out = self.relu(self.conv1(x))
+        out = self.conv2(out)
+        return self.relu(residual + self.gamma * out)
+
+class ThermalSR(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        # Initial feature extraction
+        self.conv_input = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+        
+        # Main processing blocks
+        self.block1 = nn.Sequential(
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.block2 = nn.Sequential(
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Final output
+        self.conv_output = nn.Conv2d(32, 1, kernel_size=3, padding=1)
+        
+    def forward(self, x):
+        # Store input for residual connection
+        input_img = x
+        
+        # Initial features
+        x = self.relu(self.conv_input(x))
+        
+        # Main processing
+        x = self.block1(x)
+        x = self.block2(x)
+        
+        # Output with residual connection
+        x = self.conv_output(x)
+        out = x + input_img
+        
+        return out
 
 class IRSuperResolutionDataset(Dataset):
     def __init__(self, hr_dir, lr_dir, transform=None):
@@ -32,98 +82,45 @@ class IRSuperResolutionDataset(Dataset):
             augmented = self.transform(image=hr_img, image0=lr_img)
             hr_img = augmented['image']
             lr_img = augmented['image0']
+        
+        # Convert to float32 and normalize to [-1, 1]
+        hr_img = torch.from_numpy(hr_img).float() / 127.5 - 1
+        lr_img = torch.from_numpy(lr_img).float() / 127.5 - 1
+        
+        # Add channel dimension
+        hr_img = hr_img.unsqueeze(0)
+        lr_img = lr_img.unsqueeze(0)
             
         return lr_img, hr_img
 
-class ViTSuperResolution(nn.Module):
-    def __init__(self, scale_factor=4):
-        super().__init__()
-        self.scale_factor = scale_factor
-        
-        # Feature extraction
-        self.feature_extractor = ViTModel.from_pretrained('google/vit-base-patch16-224')
-        
-        # Thermal-specific feature extraction
-        self.thermal_features = nn.Sequential(
-            nn.Conv2d(1, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.ReLU()
-        )
-        
-        # Upsampling layers
-        self.upsample = nn.Sequential(
-            nn.Conv2d(1024, 512, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(512, 256, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 1, kernel_size=3, padding=1)
-        )
-        
-        # Residual blocks
-        self.residual_blocks = nn.Sequential(
-            *[ResidualBlock(1) for _ in range(8)]
-        )
-        
-    def forward(self, x):
-        # Extract features using ViT
-        features = self.feature_extractor(x).last_hidden_state
-        
-        # Extract thermal-specific features
-        thermal_features = self.thermal_features(x)
-        
-        # Reshape features for upsampling
-        batch_size = features.shape[0]
-        features = features[:, 1:].transpose(1, 2).view(batch_size, 768, 14, 14)
-        
-        # Concatenate features
-        combined_features = torch.cat([features, thermal_features], dim=1)
-        
-        # Upsample
-        x = self.upsample(combined_features)
-        
-        # Apply residual blocks
-        x = self.residual_blocks(x)
-        
-        return x
+def get_transforms():
+    train_transform = A.Compose([
+        A.RandomCrop(224, 224),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
+    ], additional_targets={'image0': 'image'})
+    
+    val_transform = A.Compose([
+        A.CenterCrop(224, 224),
+    ], additional_targets={'image0': 'image'})
+    
+    return train_transform, val_transform
 
-class ResidualBlock(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(channels)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(channels)
-        
-    def forward(self, x):
-        residual = x
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = self.bn2(self.conv2(x))
-        x += residual
-        return F.relu(x)
-
-def train_model(model, train_loader, val_loader, num_epochs=100, lr=1e-4):
+def train_model(model, train_loader, val_loader, num_epochs=50, lr=1e-4):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     
-    criterion = nn.MSELoss()
+    criterion = nn.L1Loss()  # L1 loss for better preservation of thermal values
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5)
-    
-    # Initialize wandb
-    wandb.init(project="ir-super-resolution")
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
     
     best_val_loss = float('inf')
     
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0
+        
         for lr_imgs, hr_imgs in tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}'):
             lr_imgs = lr_imgs.to(device)
             hr_imgs = hr_imgs.to(device)
@@ -132,8 +129,11 @@ def train_model(model, train_loader, val_loader, num_epochs=100, lr=1e-4):
             outputs = model(lr_imgs)
             loss = criterion(outputs, hr_imgs)
             loss.backward()
-            optimizer.step()
             
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+            
+            optimizer.step()
             train_loss += loss.item()
         
         train_loss /= len(train_loader)
@@ -152,40 +152,13 @@ def train_model(model, train_loader, val_loader, num_epochs=100, lr=1e-4):
         
         val_loss /= len(val_loader)
         
-        # Log metrics
-        wandb.log({
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'learning_rate': optimizer.param_groups[0]['lr']
-        })
-        
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), 'best_model.pth')
+            torch.save(model.state_dict(), 'models/best_model.pth')
         
         scheduler.step(val_loss)
         
         print(f'Epoch {epoch+1}/{num_epochs}')
         print(f'Train Loss: {train_loss:.4f}')
-        print(f'Val Loss: {val_loss:.4f}')
-        
-    wandb.finish()
-
-def get_transforms():
-    train_transform = A.Compose([
-        A.RandomCrop(224, 224),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.5),
-        A.Normalize(mean=[0.5], std=[0.5]),
-        ToTensorV2()
-    ])
-    
-    val_transform = A.Compose([
-        A.CenterCrop(224, 224),
-        A.Normalize(mean=[0.5], std=[0.5]),
-        ToTensorV2()
-    ])
-    
-    return train_transform, val_transform 
+        print(f'Val Loss: {val_loss:.4f}') 
