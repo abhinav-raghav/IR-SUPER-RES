@@ -122,10 +122,9 @@ function App() {
               <LinkedInIcon className="linkedin-icon" />
             </a>
             {' '}&{' '}
-            <a href="https://www.linkedin.com/in/harshvardhan-sanguri-90248b281/" target="_blank" rel="noopener noreferrer">
+            <span>
               Harshvardhan Sanguri
-              <LinkedInIcon className="linkedin-icon" />
-            </a>
+            </span>
           </div>
         </div>
       </footer>

@@ -206,9 +206,9 @@ HTML_TEMPLATE = '''
         <a href="https://www.linkedin.com/in/raghav-abhinav/" target="_blank">
             <i class="fab fa-linkedin"></i>Abhinav Raghav
         </a>
-        <a href="https://www.linkedin.com/in/harshvardhan-sanguri-90248b281/" target="_blank">
-            <i class="fab fa-linkedin"></i>Harshvardhan Sanguri
-        </a>
+        <span>
+            Harshvardhan Sanguri
+        </span>
     </div>
 
     <script>

@@ -61,7 +61,7 @@ The model uses a custom CNN architecture optimized for thermal image enhancement
 ## Authors
 
 - [Abhinav Raghav](https://www.linkedin.com/in/raghav-abhinav/)
-- [Harshvardhan Sanguri](https://www.linkedin.com/in/harshvardhan-sanguri-90248b281/)
+- Harshvardhan Sanguri
 
 ## License
 
