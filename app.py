@@ -6,9 +6,29 @@ import torch.nn as nn
 import numpy as np
 import cv2
 from model import ThermalSR
+import tempfile
 
 app = Flask(__name__)
 CORS(app)
+
+# Create a temporary directory for uploads
+UPLOAD_FOLDER = tempfile.gettempdir()
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+# Initialize model
+device = torch.device('cpu')
+model = None
+
+def load_model():
+    global model
+    if model is None:
+        try:
+            model = ThermalSR().to(device)
+            model.eval()
+        except Exception as e:
+            print(f"Error initializing model: {str(e)}")
+            return None
+    return model
 
 # HTML template for the upload form
 HTML_TEMPLATE = '''
@@ -248,65 +268,31 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-# Configure upload folder
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# Initialize model
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = ThermalSR().to(device)
-
-# Try to load trained model
-model_path = 'models/best_model.pth'
-if os.path.exists(model_path):
-    try:
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        model.eval()
-        print("Model loaded successfully!")
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        print("Using untrained model...")
-else:
-    print("No trained model found. Using untrained model...")
-
 def preprocess_image(image):
     # Convert to grayscale if needed
     if len(image.shape) == 3:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Store original size and value range
-    original_size = image.shape[:2]
+    # Normalize to [0, 1]
+    image = image.astype(np.float32) / 255.0
     
-    # Resize to 224x224 using LANCZOS
-    image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_LANCZOS4)
-    
-    # Normalize to [-1, 1] range
-    image = image.astype(np.float32)
-    image = (image - 128) / 128
+    # Resize to model input size
+    image = cv2.resize(image, (224, 224))
     
     # Add batch and channel dimensions
     image = torch.from_numpy(image).unsqueeze(0).unsqueeze(0)
-    
-    return image, original_size
+    return image
 
 def postprocess_image(tensor, original_size=None):
     # Remove batch and channel dimensions
     image = tensor.squeeze().cpu().numpy()
     
-    # Denormalize from [-1, 1] to [0, 255]
-    image = (image * 128 + 128).clip(0, 255).astype(np.uint8)
+    # Scale back to [0, 255]
+    image = (image * 255).clip(0, 255).astype(np.uint8)
     
-    # Apply CLAHE to enhance local contrast
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    image = clahe.apply(image)
-    
-    # Apply thermal colormap
-    image = cv2.applyColorMap(image, cv2.COLORMAP_INFERNO)
-    
-    # Resize to original size if specified
+    # Resize back to original size if specified
     if original_size is not None:
-        image = cv2.resize(image, (original_size[1], original_size[0]), 
-                          interpolation=cv2.INTER_LANCZOS4)
+        image = cv2.resize(image, (original_size[1], original_size[0]))
     
     return image
 
@@ -316,51 +302,55 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
-    
     try:
-        # Read and process image
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file part'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
+
+        # Read and process the image
         img_array = np.frombuffer(file.read(), np.uint8)
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        
-        if img is None:
+        original_image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if original_image is None:
             return jsonify({'error': 'Invalid image file'}), 400
-        
-        # Preprocess
-        input_tensor, original_size = preprocess_image(img)
-        input_tensor = input_tensor.to(device)
-        
+
+        # Save original image
+        original_filename = os.path.join(app.config['UPLOAD_FOLDER'], 'original_' + file.filename)
+        cv2.imwrite(original_filename, original_image)
+
+        # Load model
+        model = load_model()
+        if model is None:
+            return jsonify({'error': 'Model initialization failed'}), 500
+
         # Process image
         with torch.no_grad():
+            input_tensor = preprocess_image(original_image)
             output_tensor = model(input_tensor)
-        
-        # Postprocess
-        processed_img = postprocess_image(output_tensor, original_size)
-        
+            processed_image = postprocess_image(output_tensor, original_image.shape[:2])
+
         # Save processed image
-        output_filename = f'processed_{os.path.splitext(file.filename)[0]}.jpg'
-        output_path = os.path.join(UPLOAD_FOLDER, output_filename)
-        cv2.imwrite(output_path, processed_img)
-        
-        return jsonify({'processed_url': f'/uploads/{output_filename}'})
-        
+        processed_filename = os.path.join(app.config['UPLOAD_FOLDER'], 'processed_' + file.filename)
+        cv2.imwrite(processed_filename, processed_image)
+
+        return jsonify({
+            'message': 'Success',
+            'original_image': f'/uploads/original_{file.filename}',
+            'processed_image': f'/uploads/processed_{file.filename}'
+        })
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
-    if 'download' in request.args:
-        return send_file(os.path.join(UPLOAD_FOLDER, filename),
-                        as_attachment=True,
-                        download_name=filename)
-    return send_file(os.path.join(UPLOAD_FOLDER, filename))
+    return send_file(
+        os.path.join(app.config['UPLOAD_FOLDER'], filename),
+        mimetype='image/jpeg'
+    )
 
-# Add CORS headers
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -369,5 +359,4 @@ def after_request(response):
     return response
 
 if __name__ == '__main__':
-    app.run(debug=True) 
     app.run(debug=True) 
